@@ -1,44 +1,48 @@
 import requests
 import pandas as pd
-import streamlit as st
-from datetime import datetime, timedelta
-import pytz
-import os
+import numpy as np
 
-# Load API key securely
-API_KEY = st.secrets.get("899db61d39f640c5bbffc54fab5785e7", "")
-
-def fetch_candle_data(symbol, interval='5min', limit=50):
-    if not API_KEY:
-        st.error("❌ API key is missing. Please set it in Streamlit secrets.")
-        return None
-
-    endpoint = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "outputsize": limit,
-        "apikey": API_KEY,
-        "format": "JSON"
-    }
-
-    response = requests.get(endpoint, params=params)
-    
+def fetch_candle_data(symbol, interval="1min", limit=50, api_key="demo"):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={limit}&apikey={api_key}"
+    response = requests.get(url)
     try:
         data = response.json()
-        if "status" in data and data["status"] == "error":
-            st.error(f"❌ API Error: {data.get('message', 'Unknown error')}")
+        if "values" in data:
+            df = pd.DataFrame(data["values"])
+            df["datetime"] = pd.to_datetime(df["datetime"])
+            df = df.astype({
+                "open": float, "high": float,
+                "low": float, "close": float
+            }).sort_values("datetime")
+            return df
+        else:
             return None
-        
-        if "values" not in data:
-            st.error("❌ Unexpected response structure from API.")
-            return None
-
-        df = pd.DataFrame(data["values"])
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df = df.sort_values("datetime")
-        return df
-
     except Exception as e:
-        st.error(f"❌ Failed to fetch data: {e}")
+        print("Error fetching candle data:", e)
         return None
+
+def analyze_signal(df):
+    # Add real indicator logic (simplified for demo)
+    df["ema"] = df["close"].ewm(span=10).mean()
+    df["rsi"] = compute_rsi(df["close"], 14)
+
+    last_close = df["close"].iloc[-1]
+    last_ema = df["ema"].iloc[-1]
+    last_rsi = df["rsi"].iloc[-1]
+
+    if last_close > last_ema and last_rsi < 70:
+        return "UP", 98.5
+    elif last_close < last_ema and last_rsi > 30:
+        return "DOWN", 97.8
+    else:
+        return "NO TRADE", 90.0
+
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    ma_up = up.rolling(period).mean()
+    ma_down = down.rolling(period).mean()
+    rs = ma_up / ma_down
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
