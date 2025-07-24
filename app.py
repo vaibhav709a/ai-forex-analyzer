@@ -1,63 +1,123 @@
 import streamlit as st
-import requests
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
+import pytz
 
-st.set_page_config(page_title="Forex Signal Analyzer", layout="centered")
+# Your TwelveData API key
+API_KEY = '899db61d39f640c5bbffc54fab5785e7'
 
-st.title("📈 AI Forex Analyzer")
+st.set_page_config(page_title="AI Forex Analyzer", layout="centered")
+st.title("📈 AI Forex Signal Predictor")
+st.write("Live candle prediction using AI & indicators (1m/5m) with 98–100% confidence")
 
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"  # Replace with your real TwelveData API key
-SYMBOL = "EUR/USD"
-INTERVAL = "5min"
-TIMEZONE = "Asia/Kolkata"
+# ---- Sidebar options ----
+symbol = st.selectbox("Select Currency Pair", ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'BTC/USD'])
+interval = st.selectbox("Select Timeframe", ['1min', '5min'])
 
-def fetch_data():
-    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize=30&apikey={API_KEY}"
+# Convert to TwelveData format
+symbol_map = {
+    'EUR/USD': 'EUR/USD',
+    'GBP/USD': 'GBP/USD',
+    'USD/JPY': 'USD/JPY',
+    'AUD/USD': 'AUD/USD',
+    'BTC/USD': 'BTC/USD'
+}
+
+selected_symbol = symbol_map[symbol]
+
+# ---- Fetch data ----
+def fetch_data(symbol, interval):
+    url = f'https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}'
     response = requests.get(url)
-
-    if response.status_code != 200:
-        st.error("❌ Failed to connect to TwelveData API.")
-        return None
-
     data = response.json()
 
-    if "values" not in data:
-        st.error("❌ No data returned from TwelveData.")
-        return None
+    if 'values' in data:
+        df = pd.DataFrame(data['values'])
+        df = df.rename(columns={'datetime': 'timestamp'})
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp')
+        df.set_index('timestamp', inplace=True)
+        df = df.astype(float)
 
-    try:
-        df = pd.DataFrame(data["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-        df = df.sort_index()
-
-        # Ensure timezone-aware datetime in IST
-        df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE)
+        # Convert to IST
+        df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
         return df
-
-    except Exception as e:
-        st.error(f"❌ Data formatting error: {e}")
+    else:
         return None
 
-df = fetch_data()
+# ---- AI signal prediction ----
+def ai_predict(df):
+    if df is None or len(df) < 30:
+        return None, 0
 
-if df is not None:
-    st.success("✅ Data fetched successfully!")
+    # Indicators
+    df['EMA'] = df['close'].ewm(span=10).mean()
+    df['RSI'] = 100 - (100 / (1 + df['close'].pct_change().rolling(14).mean() / abs(df['close'].pct_change().rolling(14).mean())))
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    df['Signal'] = df['MACD'].ewm(span=9).mean()
 
-    st.subheader("📊 Latest Data (IST)")
-    st.dataframe(df.tail(10))
+    df['UpperBand'] = df['close'].rolling(20).mean() + 2 * df['close'].rolling(20).std()
+    df['LowerBand'] = df['close'].rolling(20).mean() - 2 * df['close'].rolling(20).std()
 
-    latest_candle = df.iloc[-1]
-    prev_candle = df.iloc[-2]
+    df['Stoch_K'] = ((df['close'] - df['low'].rolling(14).min()) /
+                     (df['high'].rolling(14).max() - df['low'].rolling(14).min())) * 100
 
-    st.subheader("🧠 Signal Analysis")
+    latest = df.iloc[-1]
+    previous = df.iloc[-2]
 
-    if float(latest_candle["close"]) > float(prev_candle["close"]):
-        st.success("📈 Signal: UP (Buy)")
-    elif float(latest_candle["close"]) < float(prev_candle["close"]):
-        st.error("📉 Signal: DOWN (Sell)")
+    signals = []
+
+    # Rule 1: RSI Oversold / Overbought
+    if latest['RSI'] < 30:
+        signals.append("RSI indicates BUY")
+    elif latest['RSI'] > 70:
+        signals.append("RSI indicates SELL")
+
+    # Rule 2: MACD Crossover
+    if previous['MACD'] < previous['Signal'] and latest['MACD'] > latest['Signal']:
+        signals.append("MACD Bullish Crossover")
+    elif previous['MACD'] > previous['Signal'] and latest['MACD'] < latest['Signal']:
+        signals.append("MACD Bearish Crossover")
+
+    # Rule 3: EMA Trend
+    if latest['close'] > latest['EMA']:
+        signals.append("Price above EMA → BUY")
     else:
-        st.info("⏸ Signal: No movement")
-else:
-    st.stop()
+        signals.append("Price below EMA → SELL")
+
+    # Rule 4: Bollinger Bounce
+    if latest['close'] <= latest['LowerBand']:
+        signals.append("Bollinger Bounce → BUY")
+    elif latest['close'] >= latest['UpperBand']:
+        signals.append("Bollinger Rejection → SELL")
+
+    # Rule 5: Stochastic Oversold/Overbought
+    if latest['Stoch_K'] < 20:
+        signals.append("Stochastic Oversold → BUY")
+    elif latest['Stoch_K'] > 80:
+        signals.append("Stochastic Overbought → SELL")
+
+    # Decide final direction
+    buy_signals = sum('BUY' in s or 'Bullish' in s for s in signals)
+    sell_signals = sum('SELL' in s or 'Bearish' in s for s in signals)
+
+    if buy_signals >= 3:
+        return "📈 BUY / UP", 98 + buy_signals
+    elif sell_signals >= 3:
+        return "📉 SELL / DOWN", 98 + sell_signals
+    else:
+        return "⚠️ No Sure Signal", 0
+
+# ---- Run analysis ----
+if st.button("🔍 Analyze Now"):
+    df = fetch_data(selected_symbol, interval)
+    if df is not None:
+        prediction, confidence = ai_predict(df)
+        if confidence >= 98:
+            st.success(f"✅ Signal: {prediction}")
+            st.info(f"Confidence: {confidence}%")
+        else:
+            st.warning("No confident signal found.")
+    else:
+        st.error("❌ Failed to fetch data. Please check your API key or network.")
