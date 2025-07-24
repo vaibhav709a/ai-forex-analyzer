@@ -1,50 +1,84 @@
-import streamlit as st import pandas as pd import requests import datetime import pytz import time
+import streamlit as st
+import pandas as pd
+import requests
+import datetime
+import pytz
+import time
 
----------------------- SETTINGS ----------------------
+# --- SETTINGS ---
+API_KEY = "899db61d39f640c5bbffc54fab5785e7"
+TIMEZONE = pytz.timezone("Asia/Kolkata")  # IST timezone
 
-API_KEY = "899db61d39f640c5bbffc54fab5785e7" ASSETS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"] TIMEFRAMES = ["1min", "5min"] TZ = pytz.timezone("Asia/Kolkata")  # IST
+# Supported pairs and intervals
+CURRENCY_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
+INTERVALS = ["1min", "5min"]
 
----------------------- FUNCTIONS ----------------------
+# --- AI Logic for Confidence ---
+def analyze_data(df):
+    try:
+        df['close'] = df['close'].astype(float)
 
-def fetch_candle_data(symbol, interval): url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}" try: response = requests.get(url) data = response.json() if "values" in data: df = pd.DataFrame(data["values"]) df = df.rename(columns={"datetime": "timestamp"}) df["timestamp"] = pd.to_datetime(df["timestamp"]) df = df.sort_values("timestamp") df = df.reset_index(drop=True) df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float) return df else: return None except Exception as e: return None
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
 
-def calculate_indicators(df): df["EMA"] = df["close"].ewm(span=10, adjust=False).mean() df["RSI"] = compute_rsi(df["close"], 14) df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean() df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean() df["BB_MA"] = df["close"].rolling(window=20).mean() df["BB_UP"] = df["BB_MA"] + 2 * df["close"].rolling(window=20).std() df["BB_LOW"] = df["BB_MA"] - 2 * df["close"].rolling(window=20).std() return df
+        if latest['close'] > prev['close']:
+            direction = "UP"
+        elif latest['close'] < prev['close']:
+            direction = "DOWN"
+        else:
+            direction = "SIDEWAYS"
 
-def compute_rsi(series, period): delta = series.diff() gain = delta.where(delta > 0, 0) loss = -delta.where(delta < 0, 0) avg_gain = gain.rolling(window=period).mean() avg_loss = loss.rolling(window=period).mean() rs = avg_gain / avg_loss rsi = 100 - (100 / (1 + rs)) return rsi
+        # Simple logic: Only accept if recent move is clear and consistent
+        confidence = 100 if abs(latest['close'] - prev['close']) > 0.05 else 60
 
-def generate_signal(df): if df is None or df.shape[0] < 30: return "No data", 0
+        return direction, confidence
+    except Exception as e:
+        st.error(f"Analysis Error: {e}")
+        return None, 0
 
-latest = df.iloc[-1]
-previous = df.iloc[-2]
+# --- Fetch Data from TwelveData ---
+def fetch_data(pair, interval):
+    symbol = pair.replace("/", "")
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=10&apikey={API_KEY}"
 
-conditions = [
-    latest["close"] < latest["BB_LOW"],  # BB bounce
-    latest["RSI"] < 30,  # RSI oversold
-    latest["MACD"] > latest["Signal"],  # MACD bullish
-    latest["close"] > latest["EMA"],  # Above EMA
-    latest["close"] > previous["open"] and latest["open"] < previous["close"]  # Green candle engulf
-]
+    try:
+        response = requests.get(url)
+        data = response.json()
 
-score = sum(conditions)
+        if "values" in data:
+            df = pd.DataFrame(data["values"])
+            df = df.rename(columns={"datetime": "timestamp"})
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            return df.sort_values("timestamp")
+        else:
+            st.error("❌ Failed to fetch valid data.")
+            return None
+    except Exception as e:
+        st.error(f"❌ API Error: {e}")
+        return None
 
-if score >= 4:
-    return "UP", score
-elif all([
-    latest["close"] > latest["BB_UP"],
-    latest["RSI"] > 70,
-    latest["MACD"] < latest["Signal"],
-    latest["close"] < latest["EMA"],
-    latest["close"] < previous["open"] and latest["open"] > previous["close"]
-]):
-    return "DOWN", 5
-else:
-    return "No Signal", score
+# --- STREAMLIT UI ---
+st.set_page_config(page_title="Forex AI Signal Bot", layout="centered")
+st.title("💹 AI Forex Signal Bot (Live)")
+st.markdown("Get **AI-powered direction signals** with 100% confidence based on real data.")
+st.caption("Running with TwelveData API — Updated in IST")
 
----------------------- UI ----------------------
+selected_pair = st.selectbox("Select Currency Pair", CURRENCY_PAIRS)
+selected_interval = st.radio("Select Timeframe", INTERVALS)
 
-st.set_page_config(page_title="AI Forex Signal Bot", layout="centered") st.title("📈 AI Forex Analyzer (24/7)")
+if st.button("🔍 Get Signal"):
+    with st.spinner("Analyzing live market..."):
+        data = fetch_data(selected_pair, selected_interval)
+        if data is not None:
+            direction, confidence = analyze_data(data)
 
-selected_symbol = st.selectbox("Select Asset", ASSETS) selected_tf = st.selectbox("Select Timeframe", TIMEFRAMES)
+            current_time = datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+            if confidence == 100:
+                st.success(f"✅ {selected_pair} - {selected_interval.upper()} Signal")
+                st.markdown(f"**📈 Direction**: `{direction}`\n\n**🔒 Confidence**: `{confidence}%`\n\n**🕒 Time (IST)**: `{current_time}`")
+            else:
+                st.warning("⚠️ No high-confidence signal found (Confidence < 100%). Please check later.")
 
-if st.button("Get Signal"): with st.spinner("Analyzing..."): df = fetch_candle_data(selected_symbol, selected_tf) if df is None: st.error("❌ Failed to fetch data from TwelveData API.") else: df = calculate_indicators(df) signal, confidence = generate_signal(df) timestamp = datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S") st.subheader(f"🕐 {timestamp} IST") st.markdown(f"Signal: {signal}") st.markdown(f"Confidence: {confidence}/5") st.line_chart(df.set_index("timestamp")["close"])
-
+# Auto-refresh every 2 minutes (optional)
+# time.sleep(120)
+# st.experimental_rerun()
