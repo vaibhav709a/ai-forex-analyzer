@@ -1,13 +1,11 @@
-# main.py
+# app.py
 
 import streamlit as st
 from realtime_forecast import fetch_candle_data, analyze_signal
 import pytz
-
 from datetime import datetime
 
-# Set your TwelveData API key here
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"
+API_KEY = "899db61d39f640c5bbffc54fab5785e7"  # Replace with your real API key
 
 st.title("📈 AI Forex Signal Predictor (Real-Time)")
 st.markdown("Select a currency pair and timeframe. Get real-time AI signal.")
@@ -22,9 +20,11 @@ if st.button("📊 Analyze"):
         df = fetch_candle_data(symbol=symbol, interval=interval, limit=50, api_key=API_KEY)
 
         if df is not None:
-            # Convert index to datetime if not already
-            if not isinstance(df.index, datetime):
+            # ✅ Safe timezone conversion
+            if df.index.tz is None:
                 df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
+            else:
+                df.index = df.index.tz_convert('Asia/Kolkata')
 
             st.success("✅ Data fetched successfully!")
             st.write("📆 Timezone: IST (Asia/Kolkata)")
@@ -34,4 +34,4 @@ if st.button("📊 Analyze"):
             st.markdown(f"### 📍 **Prediction: {signal.upper()}**")
             st.markdown(f"#### 🔐 Confidence: **{confidence:.2f}%**")
         else:
-            st.error("❌ Failed to fetch data.")
+            st.error("❌ Failed to fetch data.")            st.error("❌ Failed to fetch data.")
