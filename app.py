@@ -1,95 +1,50 @@
-import streamlit as st
-import pandas as pd
-import requests
-import datetime
-import pytz
+import streamlit as st import pandas as pd import requests import datetime import pytz import time
 
-# ========== CONFIG ==========
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"
-BASE_URL = "https://api.twelvedata.com/time_series"
-TIMEZONE = "Asia/Kolkata"
-INDICATOR_CONFIDENCE_THRESHOLD = 0.98
+---------------------- SETTINGS ----------------------
 
-# ========== FUNCTIONS ==========
+API_KEY = "899db61d39f640c5bbffc54fab5785e7" ASSETS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"] TIMEFRAMES = ["1min", "5min"] TZ = pytz.timezone("Asia/Kolkata")  # IST
 
-def fetch_data(symbol, interval):
-    params = {
-        "symbol": symbol,
-        "interval": interval,
-        "outputsize": 100,
-        "apikey": API_KEY,
-        "timezone": "Asia/Kolkata"
-    }
-    response = requests.get(BASE_URL, params=params)
-    if response.status_code == 200:
-        data = response.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df["datetime"] = pd.to_datetime(df["datetime"])
-            df.set_index("datetime", inplace=True)
-            df = df.astype(float)
-            return df.sort_index()
-    return None
+---------------------- FUNCTIONS ----------------------
 
-def analyze_ai(df):
-    if df is None or len(df) < 20:
-        return None, None
+def fetch_candle_data(symbol, interval): url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}" try: response = requests.get(url) data = response.json() if "values" in data: df = pd.DataFrame(data["values"]) df = df.rename(columns={"datetime": "timestamp"}) df["timestamp"] = pd.to_datetime(df["timestamp"]) df = df.sort_values("timestamp") df = df.reset_index(drop=True) df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float) return df else: return None except Exception as e: return None
 
-    last_candle = df.iloc[-1]
-    prev_candle = df.iloc[-2]
+def calculate_indicators(df): df["EMA"] = df["close"].ewm(span=10, adjust=False).mean() df["RSI"] = compute_rsi(df["close"], 14) df["MACD"] = df["close"].ewm(span=12, adjust=False).mean() - df["close"].ewm(span=26, adjust=False).mean() df["Signal"] = df["MACD"].ewm(span=9, adjust=False).mean() df["BB_MA"] = df["close"].rolling(window=20).mean() df["BB_UP"] = df["BB_MA"] + 2 * df["close"].rolling(window=20).std() df["BB_LOW"] = df["BB_MA"] - 2 * df["close"].rolling(window=20).std() return df
 
-    # Indicators (simplified logic)
-    df["EMA10"] = df["close"].ewm(span=10).mean()
-    df["RSI"] = compute_rsi(df["close"])
-    df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+def compute_rsi(series, period): delta = series.diff() gain = delta.where(delta > 0, 0) loss = -delta.where(delta < 0, 0) avg_gain = gain.rolling(window=period).mean() avg_loss = loss.rolling(window=period).mean() rs = avg_gain / avg_loss rsi = 100 - (100 / (1 + rs)) return rsi
 
-    rsi = df["RSI"].iloc[-1]
-    ema_trend = df["close"].iloc[-1] > df["EMA10"].iloc[-1]
-    macd_positive = df["MACD"].iloc[-1] > 0
+def generate_signal(df): if df is None or df.shape[0] < 30: return "No data", 0
 
-    # Logic
-    up_conditions = rsi < 70 and ema_trend and macd_positive
-    down_conditions = rsi > 30 and not ema_trend and not macd_positive
+latest = df.iloc[-1]
+previous = df.iloc[-2]
 
-    if up_conditions:
-        return "UP", 0.99
-    elif down_conditions:
-        return "DOWN", 0.99
-    else:
-        return "NO SIGNAL", 0.5
+conditions = [
+    latest["close"] < latest["BB_LOW"],  # BB bounce
+    latest["RSI"] < 30,  # RSI oversold
+    latest["MACD"] > latest["Signal"],  # MACD bullish
+    latest["close"] > latest["EMA"],  # Above EMA
+    latest["close"] > previous["open"] and latest["open"] < previous["close"]  # Green candle engulf
+]
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
+score = sum(conditions)
 
-    avg_gain = up.rolling(window=period).mean()
-    avg_loss = down.rolling(window=period).mean()
-
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-# ========== UI ==========
-
-st.set_page_config(page_title="AI Forex Signal", layout="centered")
-st.title("📊 AI Forex Signal Analyzer")
-st.markdown("Live signal prediction using RSI, EMA, MACD from **TwelveData**")
-
-symbol = st.selectbox("Select Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
-interval = st.selectbox("Timeframe", ["1min", "5min"])
-
-df = fetch_data(symbol, interval)
-
-if df is not None:
-    st.success(f"✅ Data fetched for {symbol} ({interval})")
-
-    signal, confidence = analyze_ai(df)
-
-    if signal != "NO SIGNAL" and confidence >= INDICATOR_CONFIDENCE_THRESHOLD:
-        st.markdown(f"### 🟢 Next Candle Direction: **{signal}**")
-        st.markdown(f"#### Confidence: **{int(confidence*100)}%**")
-    else:
-        st.warning("⚠️ Not enough confirmation to give a sureshot signal.")
+if score >= 4:
+    return "UP", score
+elif all([
+    latest["close"] > latest["BB_UP"],
+    latest["RSI"] > 70,
+    latest["MACD"] < latest["Signal"],
+    latest["close"] < latest["EMA"],
+    latest["close"] < previous["open"] and latest["open"] > previous["close"]
+]):
+    return "DOWN", 5
 else:
-    st.error("❌ Failed to fetch data from TwelveData API.")
+    return "No Signal", score
+
+---------------------- UI ----------------------
+
+st.set_page_config(page_title="AI Forex Signal Bot", layout="centered") st.title("📈 AI Forex Analyzer (24/7)")
+
+selected_symbol = st.selectbox("Select Asset", ASSETS) selected_tf = st.selectbox("Select Timeframe", TIMEFRAMES)
+
+if st.button("Get Signal"): with st.spinner("Analyzing..."): df = fetch_candle_data(selected_symbol, selected_tf) if df is None: st.error("❌ Failed to fetch data from TwelveData API.") else: df = calculate_indicators(df) signal, confidence = generate_signal(df) timestamp = datetime.datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S") st.subheader(f"🕐 {timestamp} IST") st.markdown(f"Signal: {signal}") st.markdown(f"Confidence: {confidence}/5") st.line_chart(df.set_index("timestamp")["close"])
+
