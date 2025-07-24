@@ -6,7 +6,7 @@ import pytz
 import time
 
 # Your TwelveData API key
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"
+API_KEY = "806dd29a09244737ae6cd1a305061557"
 
 # Timezone conversion: UTC to IST
 def convert_to_ist(utc_time_str):
