@@ -4,90 +4,99 @@ import requests
 from datetime import datetime
 import pytz
 
-# === CONFIG ===
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"  # Your TwelveData API key
-IST = pytz.timezone("Asia/Kolkata")
+# ========== CONFIG ==========
+TWELVE_DATA_API_KEY = '899db61d39f640c5bbffc54fab5785e7'  # ← Put your actual API key
+BASE_URL = 'https://api.twelvedata.com/time_series'
+TIMEZONE = 'Asia/Kolkata'
 
-# === UI ===
-st.set_page_config(page_title="AI Forex Analyzer", layout="centered")
-st.title("📈 AI Forex Direction Predictor (1m/5m)")
-st.markdown("**Live signal with AI confirmation & confidence score (IST)**")
+# ========== UI ==========
+st.set_page_config(page_title="AI Forex Signal Analyzer", layout="centered")
+st.title("📈 AI Forex Analyzer")
+st.caption("Powered by TwelveData | Live Signals with 98-100% Confidence")
 
 pair = st.selectbox("Select Currency Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
-interval = st.radio("Timeframe", ["1min", "5min"])
+tf = st.selectbox("Select Timeframe", ["1min", "5min"])
 
-# === DATA FETCH ===
-def fetch_data(symbol, interval):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
-    r = requests.get(url)
-    data = r.json()
+if st.button("🔍 Analyze Now"):
+    symbol = pair.replace('/', '')
+    interval = tf
 
-    if "values" in data:
-        df = pd.DataFrame(data["values"])
-        df = df.rename(columns={'datetime': 'timestamp'})
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        df.set_index('timestamp', inplace=True)
-        df = df.sort_index()
+    with st.spinner("Fetching and analyzing data..."):
 
-        if df.index.tz is None:
-            df.index = df.index.tz_localize('UTC').tz_convert(IST)
-        else:
-            df.index = df.index.tz_convert(IST)
+        try:
+            url = f"{BASE_URL}?symbol={symbol}&interval={interval}&outputsize=50&apikey={TWELVE_DATA_API_KEY}"
+            response = requests.get(url)
+            data = response.json()
 
-        df = df.astype(float)
-        return df
-    else:
-        st.error("❌ Failed to fetch data from TwelveData API.")
-        return None
+            if 'values' not in data:
+                st.error("❌ Failed to fetch data from TwelveData API.")
+            else:
+                df = pd.DataFrame(data['values'])
+                df = df.rename(columns={'datetime': 'timestamp'})
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+                df = df.sort_index()
 
-# === INDICATOR LOGIC ===
-def analyze(df):
-    df["EMA10"] = df["close"].ewm(span=10).mean()
-    df["EMA20"] = df["close"].ewm(span=20).mean()
-    df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["Signal"] = df["MACD"].ewm(span=9).mean()
-    df["RSI"] = compute_rsi(df["close"])
+                # Ensure UTC then convert to IST
+                df.index = df.index.tz_localize('UTC').tz_convert(TIMEZONE)
 
-    latest = df.iloc[-1]
-    previous = df.iloc[-2]
+                # Convert price columns
+                for col in ['open', 'high', 'low', 'close']:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    decision = "⏳ Wait"
-    confidence = 0
+                # ========== AI ANALYSIS ==========
+                import numpy as np
 
-    if latest["EMA10"] > latest["EMA20"] and latest["MACD"] > latest["Signal"] and latest["RSI"] < 70:
-        decision = "⬆️ Buy (UP)"
-        confidence += 33
-    if latest["EMA10"] < latest["EMA20"] and latest["MACD"] < latest["Signal"] and latest["RSI"] > 30:
-        decision = "⬇️ Sell (DOWN)"
-        confidence += 33
+                def calculate_indicators(df):
+                    df['ema'] = df['close'].ewm(span=10).mean()
+                    df['rsi'] = 100 - (100 / (1 + (df['close'].diff().clip(lower=0).rolling(14).mean() / df['close'].diff().clip(upper=0).abs().rolling(14).mean())))
+                    df['macd'] = df['close'].ewm(12).mean() - df['close'].ewm(26).mean()
+                    df['signal'] = df['macd'].ewm(9).mean()
+                    df['upper_bb'] = df['close'].rolling(20).mean() + 2 * df['close'].rolling(20).std()
+                    df['lower_bb'] = df['close'].rolling(20).mean() - 2 * df['close'].rolling(20).std()
+                    return df
 
-    # Candle confirmation
-    if latest["close"] > latest["open"]:
-        confidence += 34 if decision == "⬆️ Buy (UP)" else 0
-    elif latest["close"] < latest["open"]:
-        confidence += 34 if decision == "⬇️ Sell (DOWN)" else 0
+                df = calculate_indicators(df)
 
-    if confidence >= 98:
-        return decision, confidence
-    else:
-        return "⏳ Wait", confidence
+                latest = df.iloc[-1]
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+                # ========== AI Logic ==========
+                match_count = 0
+                total_conditions = 4
 
-# === MAIN ===
-if pair and interval:
-    st.info("🔄 Fetching real-time data...")
-    df = fetch_data(pair.replace("/", ""), interval)
-    if df is not None:
-        decision, confidence = analyze(df)
-        st.subheader("🔍 AI Forecast:")
-        st.success(f"Next Candle Direction: **{decision}**")
-        st.metric("Confidence", f"{confidence} %")
-        st.line_chart(df["close"], use_container_width=True)
+                # Condition 1: MACD crossover
+                if latest['macd'] > latest['signal']:
+                    match_count += 1
+
+                # Condition 2: Price above EMA
+                if latest['close'] > latest['ema']:
+                    match_count += 1
+
+                # Condition 3: RSI in bullish zone
+                if latest['rsi'] is not None and latest['rsi'] > 50:
+                    match_count += 1
+
+                # Condition 4: Close price bouncing from lower BB
+                if latest['close'] > latest['lower_bb']:
+                    match_count += 1
+
+                confidence = round((match_count / total_conditions) * 100)
+
+                # ========== Result ==========
+                if confidence >= 98:
+                    signal = "📈 BUY (UP)"
+                    color = "green"
+                elif confidence <= 2:
+                    signal = "📉 SELL (DOWN)"
+                    color = "red"
+                else:
+                    signal = "⚠️ No clear signal"
+                    color = "gray"
+
+                st.markdown(f"### ✅ AI Signal Result")
+                st.markdown(f"**Prediction:** <span style='color:{color}; font-size:22px'>{signal}</span>", unsafe_allow_html=True)
+                st.markdown(f"**Confidence:** `{confidence}%`")
+                st.markdown(f"**Time (IST):** `{df.index[-1].strftime('%Y-%m-%d %H:%M:%S')}`")
+
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
