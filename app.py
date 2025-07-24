@@ -1,109 +1,108 @@
 import streamlit as st
-import pandas as pd
 import requests
-from datetime import datetime
+import pandas as pd
 import pytz
+from datetime import datetime
 
-# Set IST timezone
-IST = pytz.timezone("Asia/Kolkata")
-
-# Replace with your TwelveData API Key
+# YOUR TwelveData API Key here
 API_KEY = "899db61d39f640c5bbffc54fab5785e7"
 
-# Supported assets
-ASSETS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
-
-# Timeframe options
-TIMEFRAMES = {
-    "1 Minute": "1min",
-    "5 Minute": "5min"
-}
-
-# --- Functions ---
-
-def fetch_data(symbol, interval):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}&format=JSON"
+# Indicator-based AI analysis function
+def analyze_signals(df):
     try:
-        response = requests.get(url)
-        data = response.json()
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df = df.rename(columns={"datetime": "timestamp"})
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            df = df.set_index("timestamp")
-            df = df.sort_index()
-            df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
-            df = df.astype(float, errors="ignore")
-            return df
+        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['RSI'] = compute_rsi(df['close'], 14)
+        df['Upper'], df['Middle'], df['Lower'] = compute_bollinger_bands(df['close'])
+        df['MACD'], df['Signal'] = compute_macd(df['close'])
+
+        last = df.iloc[-1]
+        signals = []
+
+        if last['close'] > last['Upper']:
+            signals.append("Overbought (BB)")
+        if last['RSI'] > 70:
+            signals.append("RSI Overbought")
+        if last['MACD'] > last['Signal']:
+            signals.append("MACD Bullish")
+
+        if last['close'] < last['Lower']:
+            signals.append("Oversold (BB)")
+        if last['RSI'] < 30:
+            signals.append("RSI Oversold")
+        if last['MACD'] < last['Signal']:
+            signals.append("MACD Bearish")
+
+        # Decision logic
+        up_conf = sum(sig in signals for sig in ["Oversold (BB)", "RSI Oversold", "MACD Bullish"])
+        down_conf = sum(sig in signals for sig in ["Overbought (BB)", "RSI Overbought", "MACD Bearish"])
+
+        if up_conf >= 2:
+            return "📈 UP", up_conf * 33
+        elif down_conf >= 2:
+            return "📉 DOWN", down_conf * 33
         else:
-            st.error("❌ Failed to fetch data from TwelveData API.")
-            return None
+            return "❓ No clear signal", 50
+
     except Exception as e:
-        st.error(f"❌ Error fetching data: {e}")
-        return None
+        st.error(f"Signal analysis error: {e}")
+        return "Error", 0
 
-def calculate_indicators(df):
-    df["EMA20"] = df["close"].ewm(span=20).mean()
-    df["RSI"] = compute_rsi(df["close"], 14)
-    df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["Signal"] = df["MACD"].ewm(span=9).mean()
-    return df
-
-def compute_rsi(series, period=14):
+# Helper functions
+def compute_rsi(series, period):
     delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
     avg_gain = gain.rolling(window=period).mean()
     avg_loss = loss.rolling(window=period).mean()
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def predict_signal(df):
-    latest = df.iloc[-1]
-    previous = df.iloc[-2]
+def compute_bollinger_bands(series, window=20):
+    sma = series.rolling(window=window).mean()
+    std = series.rolling(window=window).std()
+    upper = sma + 2 * std
+    lower = sma - 2 * std
+    return upper, sma, lower
 
-    conditions = []
+def compute_macd(series):
+    ema12 = series.ewm(span=12, adjust=False).mean()
+    ema26 = series.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    return macd, signal
 
-    if latest["close"] > latest["EMA20"]:
-        conditions.append("price_above_ema")
+# UI
+st.set_page_config(page_title="Forex AI Signal", layout="wide")
+st.title("💹 AI Forex Signal Analyzer (Live)")
 
-    if latest["RSI"] < 30:
-        conditions.append("rsi_oversold")
-    elif latest["RSI"] > 70:
-        conditions.append("rsi_overbought")
+pair = st.selectbox("Select Currency Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
+interval = st.selectbox("Timeframe", ["1min", "5min"])
 
-    if latest["MACD"] > latest["Signal"]:
-        conditions.append("macd_bullish")
-    else:
-        conditions.append("macd_bearish")
+symbol = pair.replace("/", "")
+url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={API_KEY}"
 
-    # AI-like logic for signal prediction
-    if all(cond in conditions for cond in ["price_above_ema", "rsi_oversold", "macd_bullish"]):
-        return "📈 UP", 98
-    elif all(cond in conditions for cond in ["price_above_ema", "rsi_overbought", "macd_bearish"]):
-        return "📉 DOWN", 98
-    else:
-        return "⏸ No Clear Signal", 70
+response = requests.get(url)
+data = response.json()
 
-# --- Streamlit UI ---
+if "values" not in data:
+    st.error("❌ Failed to fetch data from TwelveData API.")
+else:
+    df = pd.DataFrame(data['values'])
+    df = df.rename(columns={"datetime": "timestamp"})
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df.set_index("timestamp", inplace=True)
+    df = df.sort_index()
 
-st.set_page_config(page_title="AI Forex Analyzer", layout="centered")
-st.title("💹 AI Forex Signal Predictor")
+    # Convert to IST
+    df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
 
-symbol = st.selectbox("Select Currency Pair", ASSETS)
-timeframe_label = st.selectbox("Select Timeframe", list(TIMEFRAMES.keys()))
-timeframe = TIMEFRAMES[timeframe_label]
+    # Convert values
+    for col in ["open", "high", "low", "close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
-if st.button("🔍 Analyze"):
-    with st.spinner("Fetching and analyzing data..."):
-        df = fetch_data(symbol.replace("/", ""), timeframe)
-        if df is not None:
-            df = calculate_indicators(df)
-            signal, confidence = predict_signal(df)
+    st.line_chart(df["close"].tail(50))
 
-            st.subheader("📊 Signal Prediction")
-            st.success(f"Next Candle: **{signal}** (Confidence: {confidence}%)")
-
-            st.line_chart(df[["close", "EMA20"]].tail(30))
-
-            st.dataframe(df.tail(5)[["close", "EMA20", "RSI", "MACD", "Signal"]])
+    direction, confidence = analyze_signals(df)
+    st.subheader(f"📊 Next Signal: {direction}")
+    st.write(f"🔍 Confidence: {confidence}%")
+    st.caption(f"Last updated: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')} IST")
