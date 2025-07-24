@@ -3,103 +3,81 @@ import pandas as pd
 import requests
 import datetime
 import pytz
+import time
 
-# Your TwelveData API Key
+# Timezone
+IST = pytz.timezone("Asia/Kolkata")
+
+# TwelveData API key
 API_KEY = "899db61d39f640c5bbffc54fab5785e7"
 
-# List of supported Forex pairs
-PAIR_LIST = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
+# Supported currency pairs
+CURRENCY_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD", "ETH/USD", "USD/CAD", "USD/CHF"]
 
-# Timeframe options
-TIMEFRAMES = ["1min", "5min"]
+# Streamlit UI
+st.set_page_config(page_title="AI Forex Signal Generator", layout="centered")
+st.title("📊 AI Forex Signal Generator (100% Confidence Only)")
+st.markdown("Get highly accurate UP/DOWN signal using real-time indicators from **TwelveData API**")
 
-# Convert to IST
-def get_ist_time():
-    utc_time = datetime.datetime.utcnow()
-    ist = pytz.timezone("Asia/Kolkata")
-    return utc_time.replace(tzinfo=pytz.utc).astimezone(ist)
+pair = st.selectbox("Choose currency pair:", CURRENCY_PAIRS)
+interval = st.selectbox("Select time frame:", ["1min", "5min"])
 
-# Fetch historical data
-def fetch_data(symbol, interval):
+if st.button("🔍 Get Signal"):
+    symbol = pair.replace("/", "")
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
+    
     response = requests.get(url)
     data = response.json()
-    if "values" in data:
+
+    if "values" not in data:
+        st.error("❌ Failed to fetch valid data from TwelveData API.")
+    else:
         df = pd.DataFrame(data["values"])
         df = df.rename(columns={"datetime": "timestamp"})
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         df = df.sort_values("timestamp")
-        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
-        return df
-    return None
 
-# Calculate indicators
-def add_indicators(df):
-    df["ema"] = df["close"].ewm(span=14).mean()
-    df["rsi"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
-    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["signal"] = df["macd"].ewm(span=9).mean()
-    df["bb_upper"] = df["close"].rolling(20).mean() + 2 * df["close"].rolling(20).std()
-    df["bb_lower"] = df["close"].rolling(20).mean() - 2 * df["close"].rolling(20).std()
-    return df
+        # Convert price columns
+        for col in ["open", "high", "low", "close"]:
+            df[col] = df[col].astype(float)
 
-# Generate signal
-def get_signal(df):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    confidence = 0
-    direction = None
+        # Calculate indicators
+        df["EMA"] = df["close"].ewm(span=10, adjust=False).mean()
+        df["RSI"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
+        df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+        df["Signal"] = df["MACD"].ewm(span=9).mean()
+        df["BB_upper"] = df["close"].rolling(20).mean() + 2 * df["close"].rolling(20).std()
+        df["BB_lower"] = df["close"].rolling(20).mean() - 2 * df["close"].rolling(20).std()
 
-    # Check EMA
-    if last["close"] > last["ema"]:
-        confidence += 1
-    elif last["close"] < last["ema"]:
-        confidence -= 1
+        # Stochastic Oscillator
+        low_min = df["low"].rolling(14).min()
+        high_max = df["high"].rolling(14).max()
+        df["Stoch_K"] = 100 * ((df["close"] - low_min) / (high_max - low_min))
 
-    # Check RSI
-    if last["rsi"] < 30:
-        confidence += 1
-    elif last["rsi"] > 70:
-        confidence -= 1
+        last = df.iloc[-1]
 
-    # MACD Crossover
-    if last["macd"] > last["signal"] and prev["macd"] < prev["signal"]:
-        confidence += 1
-    elif last["macd"] < last["signal"] and prev["macd"] > prev["signal"]:
-        confidence -= 1
+        # Confidence logic: only show signal when all indicators match
+        signal = None
+        if (
+            last["close"] > last["EMA"] and
+            last["RSI"] < 70 and
+            last["MACD"] > last["Signal"] and
+            last["close"] > last["BB_upper"] and
+            last["Stoch_K"] < 80
+        ):
+            signal = "🔼 UP"
+        elif (
+            last["close"] < last["EMA"] and
+            last["RSI"] > 30 and
+            last["MACD"] < last["Signal"] and
+            last["close"] < last["BB_lower"] and
+            last["Stoch_K"] > 20
+        ):
+            signal = "🔽 DOWN"
 
-    # Bollinger Bounce
-    if last["close"] < last["bb_lower"]:
-        confidence += 1
-    elif last["close"] > last["bb_upper"]:
-        confidence -= 1
-
-    # Final decision
-    if confidence >= 4:
-        return "UP", 100
-    elif confidence <= -4:
-        return "DOWN", 100
-    else:
-        return "NO SIGNAL", int((abs(confidence) / 4) * 100)
-
-# Streamlit UI
-st.set_page_config(page_title="Forex AI Analyzer", layout="centered")
-st.title("📈 AI Forex Signal Generator (24/7)")
-st.markdown("Live signals based on EMA, RSI, MACD, Bollinger Bands\n**Only 100% confidence trades shown**")
-
-symbol = st.selectbox("Select Currency Pair", PAIR_LIST)
-interval = st.selectbox("Select Timeframe", TIMEFRAMES)
-
-if st.button("📊 Get Signal"):
-    df = fetch_data(symbol.replace("/", ""), interval)
-    if df is not None:
-        df = add_indicators(df)
-        signal, conf = get_signal(df)
-        current_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
-
-        if signal == "NO SIGNAL":
-            st.warning(f"⚠️ No 100% confidence signal detected at {current_time} IST.")
+        if signal:
+            st.success(f"✅ **Signal:** {signal}")
+            st.markdown(f"**Confidence:** 100% (All indicators matched)")
+            st.markdown(f"**Time:** {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST")
         else:
-            st.success(f"✅ Signal: **{signal}** | Confidence: **{conf}%** at {current_time} IST")
-    else:
-        st.error("❌ Failed to fetch valid data from TwelveData API.")
+            st.warning("⚠️ No high-confidence signal at this moment. Try again in a few minutes.")
