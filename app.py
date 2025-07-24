@@ -34,4 +34,4 @@ if st.button("📊 Analyze"):
             st.markdown(f"### 📍 **Prediction: {signal.upper()}**")
             st.markdown(f"#### 🔐 Confidence: **{confidence:.2f}%**")
         else:
-            st.error("❌ Failed to fetch data.")            st.error("❌ Failed to fetch data.")
+            st.error("❌ Failed to fetch data.")
