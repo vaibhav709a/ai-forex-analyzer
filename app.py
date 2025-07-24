@@ -1,37 +1,63 @@
-# app.py
-
 import streamlit as st
-from realtime_forecast import fetch_candle_data, analyze_signal
-import pytz
-from datetime import datetime
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
 
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"  # Replace with your real API key
+st.set_page_config(page_title="Forex Signal Analyzer", layout="centered")
 
-st.title("📈 AI Forex Signal Predictor (Real-Time)")
-st.markdown("Select a currency pair and timeframe. Get real-time AI signal.")
+st.title("📈 AI Forex Analyzer")
 
-symbol = st.selectbox("Choose Currency Pair", [
-    "EUR/USD", "USD/JPY", "GBP/USD", "AUD/USD", "USD/CHF", "USD/CAD", "NZD/USD", "EUR/JPY", "GBP/JPY"
-])
-interval = st.selectbox("Choose Timeframe", ["1min", "5min"])
+API_KEY = "899db61d39f640c5bbffc54fab5785e7"  # Replace with your real TwelveData API key
+SYMBOL = "EUR/USD"
+INTERVAL = "5min"
+TIMEZONE = "Asia/Kolkata"
 
-if st.button("📊 Analyze"):
-    with st.spinner("Fetching real-time data and analyzing..."):
-        df = fetch_candle_data(symbol=symbol, interval=interval, limit=50, api_key=API_KEY)
+def fetch_data():
+    url = f"https://api.twelvedata.com/time_series?symbol={SYMBOL}&interval={INTERVAL}&outputsize=30&apikey={API_KEY}"
+    response = requests.get(url)
 
-        if df is not None:
-            # ✅ Safe timezone conversion
-            if df.index.tz is None:
-                df.index = df.index.tz_localize('UTC').tz_convert('Asia/Kolkata')
-            else:
-                df.index = df.index.tz_convert('Asia/Kolkata')
+    if response.status_code != 200:
+        st.error("❌ Failed to connect to TwelveData API.")
+        return None
 
-            st.success("✅ Data fetched successfully!")
-            st.write("📆 Timezone: IST (Asia/Kolkata)")
-            st.write(df.tail())
+    data = response.json()
 
-            signal, confidence = analyze_signal(df)
-            st.markdown(f"### 📍 **Prediction: {signal.upper()}**")
-            st.markdown(f"#### 🔐 Confidence: **{confidence:.2f}%**")
-        else:
-            st.error("❌ Failed to fetch data.")
+    if "values" not in data:
+        st.error("❌ No data returned from TwelveData.")
+        return None
+
+    try:
+        df = pd.DataFrame(data["values"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df.set_index("datetime", inplace=True)
+        df = df.sort_index()
+
+        # Ensure timezone-aware datetime in IST
+        df.index = df.index.tz_localize("UTC").tz_convert(TIMEZONE)
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Data formatting error: {e}")
+        return None
+
+df = fetch_data()
+
+if df is not None:
+    st.success("✅ Data fetched successfully!")
+
+    st.subheader("📊 Latest Data (IST)")
+    st.dataframe(df.tail(10))
+
+    latest_candle = df.iloc[-1]
+    prev_candle = df.iloc[-2]
+
+    st.subheader("🧠 Signal Analysis")
+
+    if float(latest_candle["close"]) > float(prev_candle["close"]):
+        st.success("📈 Signal: UP (Buy)")
+    elif float(latest_candle["close"]) < float(prev_candle["close"]):
+        st.error("📉 Signal: DOWN (Sell)")
+    else:
+        st.info("⏸ Signal: No movement")
+else:
+    st.stop()
