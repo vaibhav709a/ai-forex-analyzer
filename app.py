@@ -5,79 +5,69 @@ import datetime
 import pytz
 import time
 
-# Timezone
-IST = pytz.timezone("Asia/Kolkata")
-
-# TwelveData API key
+# Your TwelveData API key
 API_KEY = "899db61d39f640c5bbffc54fab5785e7"
 
-# Supported currency pairs
-CURRENCY_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD", "ETH/USD", "USD/CAD", "USD/CHF"]
+# Timezone conversion: UTC to IST
+def convert_to_ist(utc_time_str):
+    utc_time = datetime.datetime.strptime(utc_time_str, "%Y-%m-%d %H:%M:%S")
+    utc_time = utc_time.replace(tzinfo=pytz.utc)
+    ist_time = utc_time.astimezone(pytz.timezone("Asia/Kolkata"))
+    return ist_time.strftime("%Y-%m-%d %H:%M:%S")
+
+# Available currency pairs
+PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
 
 # Streamlit UI
-st.set_page_config(page_title="AI Forex Signal Generator", layout="centered")
-st.title("📊 AI Forex Signal Generator (100% Confidence Only)")
-st.markdown("Get highly accurate UP/DOWN signal using real-time indicators from **TwelveData API**")
-
-pair = st.selectbox("Choose currency pair:", CURRENCY_PAIRS)
-interval = st.selectbox("Select time frame:", ["1min", "5min"])
-
+st.title("🧠 AI Forex Signal Analyzer")
+pair = st.selectbox("Choose currency pair", PAIRS)
+interval = st.selectbox("Select Timeframe", ["1min", "5min"])
 if st.button("🔍 Get Signal"):
+
     symbol = pair.replace("/", "")
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
-    
-    response = requests.get(url)
-    data = response.json()
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=10&apikey={API_KEY}"
 
-    if "values" not in data:
-        st.error("❌ Failed to fetch valid data from TwelveData API.")
-    else:
-        df = pd.DataFrame(data["values"])
-        df = df.rename(columns={"datetime": "timestamp"})
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
-        df = df.sort_values("timestamp")
+    try:
+        response = requests.get(url)
+        data = response.json()
 
-        # Convert price columns
-        for col in ["open", "high", "low", "close"]:
-            df[col] = df[col].astype(float)
-
-        # Calculate indicators
-        df["EMA"] = df["close"].ewm(span=10, adjust=False).mean()
-        df["RSI"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
-        df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-        df["Signal"] = df["MACD"].ewm(span=9).mean()
-        df["BB_upper"] = df["close"].rolling(20).mean() + 2 * df["close"].rolling(20).std()
-        df["BB_lower"] = df["close"].rolling(20).mean() - 2 * df["close"].rolling(20).std()
-
-        # Stochastic Oscillator
-        low_min = df["low"].rolling(14).min()
-        high_max = df["high"].rolling(14).max()
-        df["Stoch_K"] = 100 * ((df["close"] - low_min) / (high_max - low_min))
-
-        last = df.iloc[-1]
-
-        # Confidence logic: only show signal when all indicators match
-        signal = None
-        if (
-            last["close"] > last["EMA"] and
-            last["RSI"] < 70 and
-            last["MACD"] > last["Signal"] and
-            last["close"] > last["BB_upper"] and
-            last["Stoch_K"] < 80
-        ):
-            signal = "🔼 UP"
-        elif (
-            last["close"] < last["EMA"] and
-            last["RSI"] > 30 and
-            last["MACD"] < last["Signal"] and
-            last["close"] < last["BB_lower"] and
-            last["Stoch_K"] > 20
-        ):
-            signal = "🔽 DOWN"
-
-        if signal:
-            st.success(f"✅ **Signal:** {signal}")
-            st.markdown(f"**Confidence:** 100% (All indicators matched)")
-            st.markdown(f"**Time:** {datetime.datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} IST")
+        if "values" not in data:
+            st.error("❌ Failed to fetch valid data from TwelveData API.")
         else:
-            st.warning("⚠️ No high-confidence signal at this moment. Try again in a few minutes.")
+            df = pd.DataFrame(data["values"])
+            df = df.rename(columns={'datetime': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+
+            # Convert UTC to IST
+            df['timestamp'] = df['timestamp'].dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
+
+            # Calculate simple indicators
+            df['close'] = df['close'].astype(float)
+            df['ema'] = df['close'].ewm(span=10, adjust=False).mean()
+            df['rsi'] = df['close'].diff().apply(lambda x: max(x, 0)).rolling(14).mean() / \
+                        df['close'].diff().abs().rolling(14).mean() * 100
+            df['macd'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+
+            latest = df.iloc[-1]
+
+            # AI-like logic for signal (simplified)
+            confidence = 0
+            if latest['close'] > latest['ema']:
+                confidence += 33
+            if latest['rsi'] < 30:
+                confidence += 33
+            if latest['macd'] > 0:
+                confidence += 34
+
+            direction = "UP" if confidence == 100 else "NO TRADE"
+            time_ist = latest['timestamp'].strftime("%Y-%m-%d %H:%M:%S")
+
+            if confidence == 100:
+                st.success(f"✅ Signal: {direction} at {time_ist} IST\nConfidence: 100%")
+            else:
+                st.warning(f"⚠️ No strong signal right now. Confidence: {confidence}%")
+
+    except Exception as e:
+        st.error("❌ Failed to fetch data from TwelveData API.")
+        st.write(str(e))
