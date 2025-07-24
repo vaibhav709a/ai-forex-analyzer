@@ -3,82 +3,103 @@ import pandas as pd
 import requests
 import datetime
 import pytz
-import time
 
-# --- SETTINGS ---
+# Your TwelveData API Key
 API_KEY = "899db61d39f640c5bbffc54fab5785e7"
-TIMEZONE = pytz.timezone("Asia/Kolkata")  # IST timezone
 
-# Supported pairs and intervals
-CURRENCY_PAIRS = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
-INTERVALS = ["1min", "5min"]
+# List of supported Forex pairs
+PAIR_LIST = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
 
-# --- AI Logic for Confidence ---
-def analyze_data(df):
-    try:
-        df['close'] = df['close'].astype(float)
+# Timeframe options
+TIMEFRAMES = ["1min", "5min"]
 
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
+# Convert to IST
+def get_ist_time():
+    utc_time = datetime.datetime.utcnow()
+    ist = pytz.timezone("Asia/Kolkata")
+    return utc_time.replace(tzinfo=pytz.utc).astimezone(ist)
 
-        if latest['close'] > prev['close']:
-            direction = "UP"
-        elif latest['close'] < prev['close']:
-            direction = "DOWN"
+# Fetch historical data
+def fetch_data(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}"
+    response = requests.get(url)
+    data = response.json()
+    if "values" in data:
+        df = pd.DataFrame(data["values"])
+        df = df.rename(columns={"datetime": "timestamp"})
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df = df.sort_values("timestamp")
+        df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]].astype(float)
+        return df
+    return None
+
+# Calculate indicators
+def add_indicators(df):
+    df["ema"] = df["close"].ewm(span=14).mean()
+    df["rsi"] = 100 - (100 / (1 + df["close"].pct_change().rolling(14).mean()))
+    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+    df["signal"] = df["macd"].ewm(span=9).mean()
+    df["bb_upper"] = df["close"].rolling(20).mean() + 2 * df["close"].rolling(20).std()
+    df["bb_lower"] = df["close"].rolling(20).mean() - 2 * df["close"].rolling(20).std()
+    return df
+
+# Generate signal
+def get_signal(df):
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    confidence = 0
+    direction = None
+
+    # Check EMA
+    if last["close"] > last["ema"]:
+        confidence += 1
+    elif last["close"] < last["ema"]:
+        confidence -= 1
+
+    # Check RSI
+    if last["rsi"] < 30:
+        confidence += 1
+    elif last["rsi"] > 70:
+        confidence -= 1
+
+    # MACD Crossover
+    if last["macd"] > last["signal"] and prev["macd"] < prev["signal"]:
+        confidence += 1
+    elif last["macd"] < last["signal"] and prev["macd"] > prev["signal"]:
+        confidence -= 1
+
+    # Bollinger Bounce
+    if last["close"] < last["bb_lower"]:
+        confidence += 1
+    elif last["close"] > last["bb_upper"]:
+        confidence -= 1
+
+    # Final decision
+    if confidence >= 4:
+        return "UP", 100
+    elif confidence <= -4:
+        return "DOWN", 100
+    else:
+        return "NO SIGNAL", int((abs(confidence) / 4) * 100)
+
+# Streamlit UI
+st.set_page_config(page_title="Forex AI Analyzer", layout="centered")
+st.title("📈 AI Forex Signal Generator (24/7)")
+st.markdown("Live signals based on EMA, RSI, MACD, Bollinger Bands\n**Only 100% confidence trades shown**")
+
+symbol = st.selectbox("Select Currency Pair", PAIR_LIST)
+interval = st.selectbox("Select Timeframe", TIMEFRAMES)
+
+if st.button("📊 Get Signal"):
+    df = fetch_data(symbol.replace("/", ""), interval)
+    if df is not None:
+        df = add_indicators(df)
+        signal, conf = get_signal(df)
+        current_time = get_ist_time().strftime("%Y-%m-%d %H:%M:%S")
+
+        if signal == "NO SIGNAL":
+            st.warning(f"⚠️ No 100% confidence signal detected at {current_time} IST.")
         else:
-            direction = "SIDEWAYS"
-
-        # Simple logic: Only accept if recent move is clear and consistent
-        confidence = 100 if abs(latest['close'] - prev['close']) > 0.05 else 60
-
-        return direction, confidence
-    except Exception as e:
-        st.error(f"Analysis Error: {e}")
-        return None, 0
-
-# --- Fetch Data from TwelveData ---
-def fetch_data(pair, interval):
-    symbol = pair.replace("/", "")
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=10&apikey={API_KEY}"
-
-    try:
-        response = requests.get(url)
-        data = response.json()
-
-        if "values" in data:
-            df = pd.DataFrame(data["values"])
-            df = df.rename(columns={"datetime": "timestamp"})
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
-            return df.sort_values("timestamp")
-        else:
-            st.error("❌ Failed to fetch valid data.")
-            return None
-    except Exception as e:
-        st.error(f"❌ API Error: {e}")
-        return None
-
-# --- STREAMLIT UI ---
-st.set_page_config(page_title="Forex AI Signal Bot", layout="centered")
-st.title("💹 AI Forex Signal Bot (Live)")
-st.markdown("Get **AI-powered direction signals** with 100% confidence based on real data.")
-st.caption("Running with TwelveData API — Updated in IST")
-
-selected_pair = st.selectbox("Select Currency Pair", CURRENCY_PAIRS)
-selected_interval = st.radio("Select Timeframe", INTERVALS)
-
-if st.button("🔍 Get Signal"):
-    with st.spinner("Analyzing live market..."):
-        data = fetch_data(selected_pair, selected_interval)
-        if data is not None:
-            direction, confidence = analyze_data(data)
-
-            current_time = datetime.datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-            if confidence == 100:
-                st.success(f"✅ {selected_pair} - {selected_interval.upper()} Signal")
-                st.markdown(f"**📈 Direction**: `{direction}`\n\n**🔒 Confidence**: `{confidence}%`\n\n**🕒 Time (IST)**: `{current_time}`")
-            else:
-                st.warning("⚠️ No high-confidence signal found (Confidence < 100%). Please check later.")
-
-# Auto-refresh every 2 minutes (optional)
-# time.sleep(120)
-# st.experimental_rerun()
+            st.success(f"✅ Signal: **{signal}** | Confidence: **{conf}%** at {current_time} IST")
+    else:
+        st.error("❌ Failed to fetch valid data from TwelveData API.")
