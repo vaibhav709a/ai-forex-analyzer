@@ -9,7 +9,7 @@ API_KEY = "806dd29a09244737ae6cd1a305061557"
 
 # List of supported pairs
 PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"
+    "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD", "GBP/JPY"
 ]
 
 # Map to TwelveData format
@@ -18,6 +18,7 @@ PAIR_MAP = {
     "GBP/USD": "GBP/USD",
     "USD/JPY": "USD/JPY",
     "AUD/USD": "AUD/USD",
+    "GBP/JPY": "GBP/JPY",
     "BTC/USD": "BTC/USD"
 }
 
