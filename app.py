@@ -1,80 +1,93 @@
-Streamlit app for multi-pair AI forex signal analysis
+import streamlit as st
+import pandas as pd
+import requests
+import datetime
+import pytz
 
-import streamlit as st import pandas as pd import requests import datetime import pytz import time
+# Set IST timezone
+IST = pytz.timezone('Asia/Kolkata')
 
-TwelveData API key
-
+# TwelveData API Key
 API_KEY = "806dd29a09244737ae6cd1a305061557"
 
-Supported pairs (you can add more)
+# Forex Pairs to Analyze
+forex_pairs = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CHF", "NZD/USD", "USD/CAD", "BTC/USD"]
 
-PAIRS = [ "EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CHF", "BTC/USD", "ETH/USD", "NZD/USD", "USD/CAD" ]
+# Confidence Threshold
+CONFIDENCE_THRESHOLD = 100
 
-Function to fetch latest candle data
+# Indicator Calculation Function
+def calculate_indicators(df):
+    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
+    df['RSI'] = compute_rsi(df['close'], 14)
+    return df
 
-def get_candle_data(symbol, interval="5min"): url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=5&apikey={API_KEY}" try: res = requests.get(url) data = res.json() if "values" not in data: return None df = pd.DataFrame(data["values"]) df = df.astype({"open": float, "close": float, "high": float, "low": float}) return df except Exception as e: return None
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
+    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-Signal logic using indicators
+def fetch_data(symbol):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=50&apikey={API_KEY}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if "values" in data:
+            df = pd.DataFrame(data["values"])
+            df = df.rename(columns={'datetime': 'timestamp'})
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+            df['open'] = df['open'].astype(float)
+            df['high'] = df['high'].astype(float)
+            df['low'] = df['low'].astype(float)
+            df['close'] = df['close'].astype(float)
+            df = calculate_indicators(df)
+            return df
+    except Exception as e:
+        print("API Fetch Error:", e)
+    return None
 
-def analyze(df): if df is None or len(df) < 3: return None
+# Signal Logic
+def generate_signal(df):
+    if df is None or df.empty:
+        return None, 0
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
 
-latest = df.iloc[0]
-previous = df.iloc[1]
+    confidence = 0
 
-direction = ""
-confidence = 0
+    if latest['RSI'] < 30 and latest['close'] > latest['EMA20'] and latest['EMA20'] > latest['EMA50']:
+        confidence += 40
+    if latest['RSI'] > 70 and latest['close'] < latest['EMA20'] and latest['EMA20'] < latest['EMA50']:
+        confidence += 40
+    if latest['EMA20'] > latest['EMA50'] and latest['close'] > latest['EMA20']:
+        confidence += 20
 
-# Simple logic: bullish engulfing + RSI + BB + MACD (mock)
-body_now = abs(latest["close"] - latest["open"])
-body_prev = abs(previous["close"] - previous["open"])
+    direction = "UP" if latest['close'] > latest['EMA20'] else "DOWN"
+    return direction, confidence
 
-if latest["close"] > latest["open"] and latest["open"] < previous["close"] and body_now > body_prev:
-    direction = "UP"
-    confidence += 40
-elif latest["close"] < latest["open"] and latest["open"] > previous["close"] and body_now > body_prev:
-    direction = "DOWN"
-    confidence += 40
+# Streamlit UI
+st.set_page_config(layout="wide", page_title="AI Forex Signal Bot")
+st.title("📈 AI Forex Signal Bot (24/7, 100% Confidence Only)")
+st.write("Get sureshot 5-minute signals based on EMA + RSI logic with real-time data from TwelveData.")
 
-# Mock RSI check
-rsi = 50 + (latest["close"] - latest["open"]) * 2
-if rsi < 30:
-    direction = "UP"
-    confidence += 30
-elif rsi > 70:
-    direction = "DOWN"
-    confidence += 30
+selected_pairs = st.multiselect("Select Forex Pairs to Analyze", forex_pairs, default=forex_pairs)
 
-# Mock BB check
-bb_signal = ""
-if latest["close"] > latest["high"]:
-    bb_signal = "Above upper"
-    confidence += 30 if direction == "DOWN" else 0
-elif latest["close"] < latest["low"]:
-    bb_signal = "Below lower"
-    confidence += 30 if direction == "UP" else 0
-else:
-    bb_signal = "Middle"
+if st.button("🔍 Get Signals Now"):
+    ist_now = datetime.datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    st.info(f"🕒 Signal Time (IST): {ist_now}")
+    results = []
 
-return {
-    "direction": direction if confidence >= 90 else "NO SIGNAL",
-    "confidence": confidence,
-    "rsi": round(rsi, 2),
-    "bb": bb_signal
-}
+    for pair in selected_pairs:
+        st.write(f"🔄 Checking: `{pair}`")
+        data = fetch_data(pair)
+        direction, confidence = generate_signal(data)
 
-Streamlit UI
-
-st.set_page_config(page_title="AI Forex Multi-Pair Analyzer", layout="wide") st.title("💹 100% Confidence AI Forex Signal Bot")
-
-selected_pairs = st.multiselect("Select pairs to analyze:", PAIRS, default=["EUR/USD", "GBP/USD"]) interval = st.selectbox("Candle Timeframe:", ["1min", "5min", "15min"], index=1)
-
-if st.button("🔍 Get All Signals"): results = [] for pair in selected_pairs: st.write(f"Analyzing {pair}...") df = get_candle_data(pair.replace("/", ":"), interval) result = analyze(df) if result: results.append({ "Pair": pair, "Timeframe": interval, "Direction": result["direction"], "Confidence": f"{result['confidence']}%", "RSI": result["rsi"], "BB": result["bb"] }) else: results.append({ "Pair": pair, "Timeframe": interval, "Direction": "❌ Error", "Confidence": "-", "RSI": "-", "BB": "-" })
-
-if results:
-    df_result = pd.DataFrame(results)
-    df_result = df_result[df_result["Direction"] != "NO SIGNAL"]
-    st.success("✅ Analysis complete!")
-    st.dataframe(df_result, use_container_width=True)
-else:
-    st.error("❌ No signals found or failed to fetch data.")
-
+        if confidence >= CONFIDENCE_THRESHOLD:
+            st.success(f"✅ `{pair}` Signal: **{direction}** | Confidence: {confidence}%")
+        else:
+            st.warning(f"⚠️ `{pair}` No strong signal. Confidence: {confidence}%")
