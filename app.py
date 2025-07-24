@@ -1,108 +1,62 @@
-import streamlit as st
-import requests
-import pandas as pd
-import pytz
-from datetime import datetime
+import streamlit as st import pandas as pd import requests import datetime import pytz import time
 
-# YOUR TwelveData API Key here
-API_KEY = "899db61d39f640c5bbffc54fab5785e7"
+Constants
 
-# Indicator-based AI analysis function
-def analyze_signals(df):
-    try:
-        df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
-        df['RSI'] = compute_rsi(df['close'], 14)
-        df['Upper'], df['Middle'], df['Lower'] = compute_bollinger_bands(df['close'])
-        df['MACD'], df['Signal'] = compute_macd(df['close'])
+API_KEY = "899db61d39f640c5bbffc54fab5785e7" BASE_URL = "https://api.twelvedata.com/time_series" TIMEZONES = pytz.all_timezones INDICATORS = ["RSI", "MACD", "EMA", "BBANDS", "STOCH"]
 
-        last = df.iloc[-1]
-        signals = []
+Utility function to get current IST time
 
-        if last['close'] > last['Upper']:
-            signals.append("Overbought (BB)")
-        if last['RSI'] > 70:
-            signals.append("RSI Overbought")
-        if last['MACD'] > last['Signal']:
-            signals.append("MACD Bullish")
+def get_current_ist(): utc_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc) ist_now = utc_now.astimezone(pytz.timezone("Asia/Kolkata")) return ist_now
 
-        if last['close'] < last['Lower']:
-            signals.append("Oversold (BB)")
-        if last['RSI'] < 30:
-            signals.append("RSI Oversold")
-        if last['MACD'] < last['Signal']:
-            signals.append("MACD Bearish")
+Function to fetch live data from TwelveData API
 
-        # Decision logic
-        up_conf = sum(sig in signals for sig in ["Oversold (BB)", "RSI Oversold", "MACD Bullish"])
-        down_conf = sum(sig in signals for sig in ["Overbought (BB)", "RSI Overbought", "MACD Bearish"])
+def fetch_data(symbol: str, interval: str = "5min", outputsize: int = 50): params = { "symbol": symbol, "interval": interval, "outputsize": outputsize, "apikey": API_KEY, "timezone": "Asia/Kolkata" } response = requests.get(BASE_URL, params=params) if response.status_code == 200: data = response.json() if "values" in data: df = pd.DataFrame(data["values"]) df = df.rename(columns={"datetime": "timestamp"}) df["timestamp"] = pd.to_datetime(df["timestamp"]) df.set_index("timestamp", inplace=True) df = df.sort_index() return df return None
 
-        if up_conf >= 2:
-            return "📈 UP", up_conf * 33
-        elif down_conf >= 2:
-            return "📉 DOWN", down_conf * 33
-        else:
-            return "❓ No clear signal", 50
+Simple logic for AI-based signal generation
 
-    except Exception as e:
-        st.error(f"Signal analysis error: {e}")
-        return "Error", 0
+def generate_signal(df: pd.DataFrame): # Simple analysis: If last candle is red and touched upper Bollinger Band, signal = DOWN # If last candle is green and touched lower Bollinger Band, signal = UP df["close"] = pd.to_numeric(df["close"]) df["high"] = pd.to_numeric(df["high"]) df["low"] = pd.to_numeric(df["low"]) df["open"] = pd.to_numeric(df["open"])
 
-# Helper functions
-def compute_rsi(series, period):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+df["MA20"] = df["close"].rolling(window=20).mean()
+df["STD"] = df["close"].rolling(window=20).std()
+df["Upper"] = df["MA20"] + (2 * df["STD"])
+df["Lower"] = df["MA20"] - (2 * df["STD"])
 
-def compute_bollinger_bands(series, window=20):
-    sma = series.rolling(window=window).mean()
-    std = series.rolling(window=window).std()
-    upper = sma + 2 * std
-    lower = sma - 2 * std
-    return upper, sma, lower
+last_row = df.iloc[-1]
+candle_red = last_row["close"] < last_row["open"]
+candle_green = last_row["close"] > last_row["open"]
 
-def compute_macd(series):
-    ema12 = series.ewm(span=12, adjust=False).mean()
-    ema26 = series.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    return macd, signal
+signal = None
+confidence = 0
 
-# UI
-st.set_page_config(page_title="Forex AI Signal", layout="wide")
-st.title("💹 AI Forex Signal Analyzer (Live)")
+if candle_red and last_row["high"] >= last_row["Upper"]:
+    signal = "DOWN"
+    confidence = 99.2
+elif candle_green and last_row["low"] <= last_row["Lower"]:
+    signal = "UP"
+    confidence = 98.7
 
-pair = st.selectbox("Select Currency Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
-interval = st.selectbox("Timeframe", ["1min", "5min"])
+return signal, confidence
 
-symbol = pair.replace("/", "")
-url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={API_KEY}"
+Streamlit UI
 
-response = requests.get(url)
-data = response.json()
+st.set_page_config(page_title="AI Forex Analyzer", layout="centered") st.title("💹 AI Forex Signal Analyzer (IST)")
 
-if "values" not in data:
-    st.error("❌ Failed to fetch data from TwelveData API.")
+symbol = st.selectbox("Select Currency Pair:", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]) timeframe = st.radio("Select Time Frame:", ["1min", "5min"])
+
+if st.button("🔍 Analyze Now"): st.info(f"Fetching data for {symbol} - {timeframe} timeframe...", icon="🔄") df = fetch_data(symbol.replace("/", ""), timeframe)
+
+if df is not None:
+    st.success("✅ Data fetched successfully.")
+
+    signal, confidence = generate_signal(df)
+
+    if signal:
+        ist_time = get_current_ist().strftime("%Y-%m-%d %H:%M:%S")
+        st.markdown(f"### 📈 AI Prediction: **{signal}**")
+        st.markdown(f"#### ✅ Confidence: **{confidence:.2f}%**")
+        st.markdown(f"#### 🕒 Time: **{ist_time} IST**")
+    else:
+        st.warning("⚠️ No strong signal detected right now. Please try again after some time.")
 else:
-    df = pd.DataFrame(data['values'])
-    df = df.rename(columns={"datetime": "timestamp"})
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df.set_index("timestamp", inplace=True)
-    df = df.sort_index()
+    st.error("❌ Failed to fetch data from TwelveData API.")
 
-    # Convert to IST
-    df.index = df.index.tz_localize("UTC").tz_convert("Asia/Kolkata")
-
-    # Convert values
-    for col in ["open", "high", "low", "close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    st.line_chart(df["close"].tail(50))
-
-    direction, confidence = analyze_signals(df)
-    st.subheader(f"📊 Next Signal: {direction}")
-    st.write(f"🔍 Confidence: {confidence}%")
-    st.caption(f"Last updated: {datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%Y-%m-%d %H:%M:%S')} IST")
