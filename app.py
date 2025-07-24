@@ -1,40 +1,76 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
-from datetime import datetime, timedelta
+import datetime
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import RSIIndicator
+from sklearn.ensemble import RandomForestClassifier
 import pytz
 
-# Your TwelveData API key
-API_KEY = '899db61d39f640c5bbffc54fab5785e7'
+# -------------------- CONFIG --------------------
+API_KEY = "899db61d39f640c5bbffc54fab5785e7"
+TIMEZONE = pytz.timezone("Asia/Kolkata")
+st.set_page_config(page_title="Forex AI Signal", layout="centered")
 
-st.set_page_config(page_title="AI Forex Analyzer", layout="centered")
+# -------------------- UI --------------------
 st.title("📈 AI Forex Signal Predictor")
-st.write("Live candle prediction using AI & indicators (1m/5m) with 98–100% confidence")
+pair = st.selectbox("Select Currency Pair", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"])
+interval = st.selectbox("Timeframe", ["1min", "5min"])
+run = st.button("🔍 Analyze Now")
 
-# ---- Sidebar options ----
-symbol = st.selectbox("Select Currency Pair", ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'BTC/USD'])
-interval = st.selectbox("Select Timeframe", ['1min', '5min'])
+# -------------------- API FUNCTION --------------------
+@st.cache_data(ttl=60)
+def get_data(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=100&apikey={API_KEY}"
+    r = requests.get(url)
+    data = r.json()
+    if "values" in data:
+        df = pd.DataFrame(data["values"])
+        df = df.sort_values("datetime")
+        df.set_index("datetime", inplace=True)
+        df = df.astype(float)
+        df.index = pd.to_datetime(df.index).tz_localize('UTC').tz_convert(TIMEZONE)
+        return df
+    else:
+        return None
 
-# Convert to TwelveData format
-symbol_map = {
-    'EUR/USD': 'EUR/USD',
-    'GBP/USD': 'GBP/USD',
-    'USD/JPY': 'USD/JPY',
-    'AUD/USD': 'AUD/USD',
-    'BTC/USD': 'BTC/USD'
-}
+# -------------------- AI PREDICTION FUNCTION --------------------
+def generate_features(df):
+    df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+    df["macd"] = MACD(df["close"]).macd()
+    df["ema"] = EMAIndicator(df["close"], window=14).ema_indicator()
+    df["target"] = np.where(df["close"].shift(-1) > df["close"], 1, 0)
+    df.dropna(inplace=True)
+    return df
 
-selected_symbol = symbol_map[symbol]
+def train_and_predict(df):
+    df = generate_features(df)
+    X = df[["rsi", "macd", "ema"]]
+    y = df["target"]
 
-# ---- Fetch data ----
-def fetch_data(symbol, interval):
-    url = f'https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={API_KEY}'
-    response = requests.get(url)
-    data = response.json()
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X[:-1], y[:-1])
 
-    if 'values' in data:
-        df = pd.DataFrame(data['values'])
-        df = df.rename(columns={'datetime': 'timestamp'})
+    last_features = X.iloc[-1].values.reshape(1, -1)
+    prediction = model.predict(last_features)[0]
+    confidence = model.predict_proba(last_features)[0][prediction]
+    
+    return prediction, confidence
+
+# -------------------- MAIN RUN --------------------
+if run:
+    with st.spinner("Fetching data & analyzing..."):
+        df = get_data(pair, interval)
+        if df is not None:
+            signal, confidence = train_and_predict(df)
+            st.subheader("📊 AI Prediction Result")
+            direction = "📈 UP" if signal == 1 else "📉 DOWN"
+            st.success(f"Next Candle Direction: **{direction}**")
+            st.info(f"Confidence: **{confidence * 100:.2f}%**")
+            st.caption(f"Time: {df.index[-1].strftime('%Y-%m-%d %H:%M:%S')} IST")
+        else:
+            st.error("❌ Failed to fetch data from TwelveData API.")        df = df.rename(columns={'datetime': 'timestamp'})
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df = df.sort_values('timestamp')
         df.set_index('timestamp', inplace=True)
