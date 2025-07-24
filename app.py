@@ -1,62 +1,93 @@
-import streamlit as st import pandas as pd import requests import datetime import pytz import time
+import streamlit as st
+import pandas as pd
+import requests
+import datetime
+import pytz
 
-Constants
+# Set timezone to IST
+IST = pytz.timezone('Asia/Kolkata')
 
-API_KEY = "899db61d39f640c5bbffc54fab5785e7" BASE_URL = "https://api.twelvedata.com/time_series" TIMEZONES = pytz.all_timezones INDICATORS = ["RSI", "MACD", "EMA", "BBANDS", "STOCH"]
+# TwelveData API Key
+API_KEY = "899db61d39f640c5bbffc54fab5785e7"
 
-Utility function to get current IST time
+# Indicator calculation
+def analyze_data(df):
+    df['EMA'] = df['close'].ewm(span=10).mean()
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    df['RSI'] = 100 - (100 / (1 + (df['close'].diff().apply(lambda x: x if x > 0 else 0).rolling(14).mean() /
+                                   df['close'].diff().apply(lambda x: abs(x) if x < 0 else 0).rolling(14).mean())))
+    df['BB_upper'] = df['close'].rolling(window=20).mean() + 2 * df['close'].rolling(window=20).std()
+    df['BB_lower'] = df['close'].rolling(window=20).mean() - 2 * df['close'].rolling(window=20).std()
+    return df
 
-def get_current_ist(): utc_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc) ist_now = utc_now.astimezone(pytz.timezone("Asia/Kolkata")) return ist_now
+# AI logic to determine signal
+def get_signal(df):
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-Function to fetch live data from TwelveData API
+    up_conditions = [
+        last['close'] > last['EMA'],
+        last['MACD'] > 0,
+        last['RSI'] < 70 and last['RSI'] > 50,
+        prev['close'] < prev['BB_lower'] and last['close'] > last['BB_lower']
+    ]
 
-def fetch_data(symbol: str, interval: str = "5min", outputsize: int = 50): params = { "symbol": symbol, "interval": interval, "outputsize": outputsize, "apikey": API_KEY, "timezone": "Asia/Kolkata" } response = requests.get(BASE_URL, params=params) if response.status_code == 200: data = response.json() if "values" in data: df = pd.DataFrame(data["values"]) df = df.rename(columns={"datetime": "timestamp"}) df["timestamp"] = pd.to_datetime(df["timestamp"]) df.set_index("timestamp", inplace=True) df = df.sort_index() return df return None
+    down_conditions = [
+        last['close'] < last['EMA'],
+        last['MACD'] < 0,
+        last['RSI'] > 30 and last['RSI'] < 50,
+        prev['close'] > prev['BB_upper'] and last['close'] < last['BB_upper']
+    ]
 
-Simple logic for AI-based signal generation
-
-def generate_signal(df: pd.DataFrame): # Simple analysis: If last candle is red and touched upper Bollinger Band, signal = DOWN # If last candle is green and touched lower Bollinger Band, signal = UP df["close"] = pd.to_numeric(df["close"]) df["high"] = pd.to_numeric(df["high"]) df["low"] = pd.to_numeric(df["low"]) df["open"] = pd.to_numeric(df["open"])
-
-df["MA20"] = df["close"].rolling(window=20).mean()
-df["STD"] = df["close"].rolling(window=20).std()
-df["Upper"] = df["MA20"] + (2 * df["STD"])
-df["Lower"] = df["MA20"] - (2 * df["STD"])
-
-last_row = df.iloc[-1]
-candle_red = last_row["close"] < last_row["open"]
-candle_green = last_row["close"] > last_row["open"]
-
-signal = None
-confidence = 0
-
-if candle_red and last_row["high"] >= last_row["Upper"]:
-    signal = "DOWN"
-    confidence = 99.2
-elif candle_green and last_row["low"] <= last_row["Lower"]:
-    signal = "UP"
-    confidence = 98.7
-
-return signal, confidence
-
-Streamlit UI
-
-st.set_page_config(page_title="AI Forex Analyzer", layout="centered") st.title("💹 AI Forex Signal Analyzer (IST)")
-
-symbol = st.selectbox("Select Currency Pair:", ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]) timeframe = st.radio("Select Time Frame:", ["1min", "5min"])
-
-if st.button("🔍 Analyze Now"): st.info(f"Fetching data for {symbol} - {timeframe} timeframe...", icon="🔄") df = fetch_data(symbol.replace("/", ""), timeframe)
-
-if df is not None:
-    st.success("✅ Data fetched successfully.")
-
-    signal, confidence = generate_signal(df)
-
-    if signal:
-        ist_time = get_current_ist().strftime("%Y-%m-%d %H:%M:%S")
-        st.markdown(f"### 📈 AI Prediction: **{signal}**")
-        st.markdown(f"#### ✅ Confidence: **{confidence:.2f}%**")
-        st.markdown(f"#### 🕒 Time: **{ist_time} IST**")
+    if all(up_conditions):
+        return "🔼 UP", 98
+    elif all(down_conditions):
+        return "🔽 DOWN", 98
     else:
-        st.warning("⚠️ No strong signal detected right now. Please try again after some time.")
-else:
-    st.error("❌ Failed to fetch data from TwelveData API.")
+        return "⚠️ No clear signal", 0
 
+# Fetch data from TwelveData
+def fetch_data(symbol, interval):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=60&apikey={API_KEY}"
+    try:
+        res = requests.get(url)
+        data = res.json()
+
+        if 'values' not in data:
+            return None
+
+        df = pd.DataFrame(data['values'])
+        df = df.rename(columns={'datetime': 'timestamp'})
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        df.index = df.index.tz_localize('UTC').tz_convert(IST)
+        df = df.astype(float)
+        return df
+    except Exception:
+        return None
+
+# Streamlit UI
+st.title("📊 AI Forex Signal Predictor")
+st.write("Get real-time UP/DOWN signal using AI-based indicator logic (TwelveData API)")
+
+symbols = ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "BTC/USD"]
+intervals = ["1min", "5min"]
+
+symbol = st.selectbox("Select Currency Pair", symbols)
+interval = st.selectbox("Select Timeframe", intervals)
+run_button = st.button("🔍 Analyze Signal")
+
+if run_button:
+    st.info("⏳ Fetching and analyzing data...")
+    data = fetch_data(symbol.replace("/", ""), interval)
+
+    if data is None:
+        st.error("❌ Failed to fetch data from TwelveData API.")
+    else:
+        df = analyze_data(data)
+        signal, confidence = get_signal(df)
+
+        if confidence > 0:
+            st.success(f"✅ Next Candle Prediction: **{signal}** with {confidence}% confidence")
+        else:
+            st.warning("⚠️ No confident signal detected.")
